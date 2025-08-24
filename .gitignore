@@ -1,0 +1,65 @@
+# Unity generated
+[Ll]ibrary/
+[Tt]emp/
+[Bb]uild/
+[Bb]uilds/
+[Ll]ogs/
+[Mm]emoryCaptures/
+[Oo]bj/
+UserSettings/
+
+.vscode/
+.idea/
+*.csproj
+*.unityproj
+*.sln
+*.user
+*.pidb
+*.booproj
+*.svd
+*.pdb
+*.mdb
+*.opendb
+*.VC.db
+
+# OS files
+.DS_Store
+Thumbs.db
+
+/Packages/
+
+/results/
+
+/StreamingAssets/
+
+/Assets/Config/
+
+/Assets/FreeFlyCamera/
+
+/Assets/ML-Agents/
+
+/Assets/Models/
+
+/Assets/Scenes/
+
+/Assets/Settings/
+
+/Assets/TextMesh Pro/
+
+/Assets/WG Free Skies/
+
+/Assets/PetSimulation/Kitty/Models/
+
+
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Custom
+results/
+debug.log
+
+
+
+
