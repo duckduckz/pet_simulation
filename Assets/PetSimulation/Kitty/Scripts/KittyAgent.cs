@@ -7,6 +7,17 @@ using Unity.MLAgents.Sensors;
 [RequireComponent(typeof(DecisionRequester))]
 public class KittyAgent : Agent
 {
+    private const int ACT_IDLE = 0;
+    private const int ACT_WALK = 1;
+    private const int ACT_RUN  = 2;
+    private const int ACT_LOSE = 3;   
+
+    private const int GES_IDLE = 0;
+    private const int GES_WALK = 1;
+    private const int GES_RUN  = 2;
+    private const int GES_KICK = 3;   
+    private const int GES_LOSE = 4;   
+
     [Header("Scene references")]
     public Transform ball;
     public Transform goal;
@@ -19,13 +30,13 @@ public class KittyAgent : Agent
     public float runSpeed = 4f;
     public float idleSpeed = 0f;
 
-	[Header("Quality-of-life")]
-	public bool autoFaceWhenNear = true;
-	public float faceAssistDistance = 1.2f;
+    [Header("Quality-of-life")]
+    public bool autoFaceWhenNear = true;
+    public float faceAssistDistance = 1.2f;
 
     [Header("Kick settings")]
     public float kickForce = 10f;
-    public float kickDistance = 2.0f;         
+    public float kickDistance = 2.0f;
     [Range(-1f, 1f)] public float kickFacingDot = 0.7f;
     public float kickCooldown = 0.35f;
 
@@ -43,7 +54,7 @@ public class KittyAgent : Agent
     private GestureReceiver gestureReceiver;
 
     private bool _kickPressedLast;
-	private bool _pendingKick;
+    private bool _pendingKick;
     private float _lastKickTime;
     private bool _ballFrozen;
 
@@ -76,7 +87,7 @@ public class KittyAgent : Agent
 
         if (ballRb != null)
         {
-            ballRb.constraints = RigidbodyConstraints.None; 
+            ballRb.constraints = RigidbodyConstraints.None;
             ballRb.linearVelocity = Vector3.zero;
             ballRb.angularVelocity = Vector3.zero;
         }
@@ -104,138 +115,154 @@ public class KittyAgent : Agent
         sensor.AddObservation(velSelf.z);
         sensor.AddObservation(velBall.x);
         sensor.AddObservation(velBall.z);
-        // pad to 12
+       
         sensor.AddObservation(0f);
         sensor.AddObservation(0f);
         sensor.AddObservation(0f);
         sensor.AddObservation(1f);
     }
 
-	public override void OnActionReceived(ActionBuffers a)
-	{
-		if (rb == null || anim == null) return;
+    public override void OnActionReceived(ActionBuffers a)
+    {
+        if (rb == null || anim == null) return;
 
-		// direction from RL 
-		float moveX = Mathf.Clamp(a.ContinuousActions[0], -1f, 1f);
-		float moveZ = Mathf.Clamp(a.ContinuousActions[1], -1f, 1f);
-		Vector3 rlDir = new Vector3(moveX, 0f, moveZ);
-		if (rlDir.sqrMagnitude > 1f) rlDir.Normalize();
+        // direction from model 
+        float moveX = Mathf.Clamp(a.ContinuousActions[0], -1f, 1f);
+        float moveZ = Mathf.Clamp(a.ContinuousActions[1], -1f, 1f);
+        Vector3 rlDir = new Vector3(moveX, 0f, moveZ);
+        if (rlDir.sqrMagnitude > 1f) rlDir.Normalize();
 
-		// gestures control
-		int gesture = gestureReceiver ? gestureReceiver.gesture : -1;
-		float speed; int animState;
-		if (gesture == 0)            { speed = idleSpeed; animState = 0; } // idle
-		else if (gesture == 1)       { speed = walkSpeed; animState = 1; } // walk
-		else if (gesture == 2)       { speed = runSpeed;  animState = 2; } // run
-		else { speed = walkSpeed; animState = 1; } 
+        // gestures control
+        int gesture = gestureReceiver ? gestureReceiver.gesture : -1;
+        float speed; int animState;
 
-
-		// Freeze/unfreeze ball while Idle
-		if (ballRb)
+		// map gestures -> animation state
+		if (gesture == GES_IDLE)
 		{
-			if (gesture == 0 && !_ballFrozen)
-			{
-				ballRb.linearVelocity = Vector3.zero;
-				ballRb.angularVelocity = Vector3.zero;
-				ballRb.constraints = RigidbodyConstraints.FreezePositionX
-								| RigidbodyConstraints.FreezePositionZ
-								| RigidbodyConstraints.FreezeRotation;
-				_ballFrozen = true;
-			}
-			else if (gesture != 0 && _ballFrozen)
-			{
-				ballRb.constraints = RigidbodyConstraints.None;
-				_ballFrozen = false;
-			}
+			speed = idleSpeed; animState = ACT_IDLE;
 		}
-
-		// distance/facing to ball 
-		float distToBall = Mathf.Infinity;
-		Vector3 towardBall = Vector3.zero;
-		float facingDot = -1f;
-		if (ball)
+		else if (gesture == GES_WALK)
 		{
-			Vector3 toBall = ball.position - transform.position;
-			toBall.y = 0f;
-			distToBall = toBall.magnitude;
-			towardBall = distToBall > 1e-3f ? toBall / distToBall : Vector3.zero;
-			if (towardBall != Vector3.zero)
-				facingDot = Vector3.Dot(transform.forward, towardBall);
+			speed = walkSpeed; animState = ACT_WALK;
 		}
-
-		// final move direction
-		Vector3 dir = rlDir;
-
-		// normal assist while walking/running
-		if ((gesture == 1 || gesture == 2) && towardBall != Vector3.zero)
+		else if (gesture == GES_RUN)
 		{
-			float t = Mathf.InverseLerp(assistStartDist, assistFullDist, distToBall);
-			float w = Mathf.Clamp01(t) * assistMaxWeight;         // 0..assistMaxWeight
-			dir = (dir.sqrMagnitude < 1e-6f) ? towardBall : Vector3.Slerp(dir.normalized, towardBall, w);
+			speed = runSpeed; animState = ACT_RUN;
 		}
-
-		// kick-pending assist: when showing 3 fingers but not yet in range, strongly steer to the ball
-		bool gestureKickHeld = (gesture == 3);
-		if (gestureKickHeld && (distToBall > kickDistance || facingDot < kickFacingDot))
+		else if (gesture == GES_LOSE)
 		{
-			// strong override toward ball so we actually close the gap
-			if (towardBall != Vector3.zero)
-			{
-				dir = towardBall;                    // full override while 3-fingers is up & not eligible
-				// move faster to close in (optional)
-				speed = Mathf.Max(speed, runSpeed);  // ensure we don't crawl toward it
-				// auto-face so facing condition will pass as we arrive
-				transform.rotation = Quaternion.LookRotation(towardBall);
-				Debug.Log($"[KickAssist] Driving toward ball. dist={distToBall:F2}, dot={facingDot:F2}");
-			}
-		}
-
-		// Move/animate
-		if (dir.sqrMagnitude > 1e-6f && speed > 0f)
-		{
-			Vector3 step = dir.normalized * speed * Time.fixedDeltaTime;
-			rb.MovePosition(rb.position + step);
-			if (!(gestureKickHeld && towardBall != Vector3.zero)) // rotation already handled above for kick-assist
-				transform.rotation = Quaternion.LookRotation(dir);
-			anim.SetInteger("Action", animState);
+			speed = 0f; animState = ACT_LOSE;
 		}
 		else
 		{
-			anim.SetInteger("Action", 0);
+			speed = walkSpeed; animState = ACT_WALK;
 		}
 
-		// --- Kick with pending latch ---
-		if (gestureKickHeld && !_kickPressedLast) _pendingKick = true;
-		else if (!gestureKickHeld)                _pendingKick = false;
+        // freeze&unfreeze ball while Idle or Lose sit
+        if (ballRb)
+        {
+            bool shouldFreeze = (animState == ACT_IDLE) || (animState == ACT_LOSE);
+            if (shouldFreeze && !_ballFrozen)
+            {
+                ballRb.linearVelocity = Vector3.zero;
+                ballRb.angularVelocity = Vector3.zero;
+                ballRb.constraints = RigidbodyConstraints.FreezePositionX
+                                   | RigidbodyConstraints.FreezePositionZ
+                                   | RigidbodyConstraints.FreezeRotation;
+                _ballFrozen = true;
+            }
+            else if (!shouldFreeze && _ballFrozen)
+            {
+                ballRb.constraints = RigidbodyConstraints.None;
+                _ballFrozen = false;
+            }
+        }
 
-		bool canKickNow = (distToBall <= kickDistance) && (facingDot >= kickFacingDot);
-		bool cooldownOk = (Time.time - _lastKickTime) >= kickCooldown;
+        // when distance or facing to the ball 
+        float distToBall = Mathf.Infinity;
+        Vector3 towardBall = Vector3.zero;
+        float facingDot = -1f;
+        if (ball)
+        {
+            Vector3 toBall = ball.position - transform.position;
+            toBall.y = 0f;
+            distToBall = toBall.magnitude;
+            towardBall = distToBall > 1e-3f ? toBall / distToBall : Vector3.zero;
+            if (towardBall != Vector3.zero)
+                facingDot = Vector3.Dot(transform.forward, towardBall);
+        }
 
-		if (_pendingKick && canKickNow && cooldownOk)
-		{
-			Debug.Log($"KICK! dist={distToBall:F2}, dot={facingDot:F2}");
-			KickBall();
-			_lastKickTime = Time.time;
-			_pendingKick = false;
-		}
-		else if (gestureKickHeld)
-		{
-			Debug.Log($"Kick pending... dist={distToBall:F2} (need ≤{kickDistance}), dot={facingDot:F2} (need ≥{kickFacingDot}), cooldownOK={cooldownOk}");
-		}
+        // final move direction
+        Vector3 dir = rlDir;
 
-		_kickPressedLast = gestureKickHeld;
+        // normal assist while walking/running
+        bool isWalkOrRun = (animState == ACT_WALK) || (animState == ACT_RUN);
+        if (isWalkOrRun && towardBall != Vector3.zero)
+        {
+            float t = Mathf.InverseLerp(assistStartDist, assistFullDist, distToBall);
+            float w = Mathf.Clamp01(t) * assistMaxWeight;         
+            dir = (dir.sqrMagnitude < 1e-6f) ? towardBall : Vector3.Slerp(dir.normalized, towardBall, w);
+        }
 
-		// Rewards (unchanged)
-		if (ball && goal)
-		{
-			float dist = Vector3.Distance(ball.position, goal.position);
-			AddReward(0.5f * (prevDist - dist));
-			AddReward(-0.01f * distToBall);
-			AddReward(-0.001f);
-			prevDist = dist;
-		}
-	}
+        // kick-pending assist: when showing 3 fingers but not yet in range, strongly steer to the ball
+        bool gestureKickHeld = (gesture == GES_KICK);
+        if (gestureKickHeld && (distToBall > kickDistance || facingDot < kickFacingDot))
+        {
+            if (towardBall != Vector3.zero)
+            {
+                dir = towardBall;                    // full override while 3-fingers is up & not eligible
+                speed = Mathf.Max(speed, runSpeed);  // ensure we don't crawl toward it
+                transform.rotation = Quaternion.LookRotation(towardBall);
+                Debug.Log($"[KickAssist] Driving toward ball. dist={distToBall:F2}, dot={facingDot:F2}");
+            }
+        }
 
+        // move/animate
+        if (dir.sqrMagnitude > 1e-6f && speed > 0f)
+        {
+            Vector3 step = dir.normalized * speed * Time.fixedDeltaTime;
+            rb.MovePosition(rb.position + step);
+            if (!(gestureKickHeld && towardBall != Vector3.zero)) // rotation already handled above for kick-assist
+                transform.rotation = Quaternion.LookRotation(dir);
+            anim.SetInteger("Action", animState);
+        }
+        else
+        {
+            // idle or Lose: no movement
+            anim.SetInteger("Action", animState);
+        }
+
+        // Kick
+        if (gestureKickHeld && !_kickPressedLast) _pendingKick = true;
+        else if (!gestureKickHeld)                _pendingKick = false;
+
+        bool canKickNow = (distToBall <= kickDistance) && (facingDot >= kickFacingDot);
+        bool cooldownOk = (Time.time - _lastKickTime) >= kickCooldown;
+
+        if (_pendingKick && canKickNow && cooldownOk)
+        {
+            Debug.Log($"KICK! dist={distToBall:F2}, dot={facingDot:F2}");
+            KickBall();
+            _lastKickTime = Time.time;
+            _pendingKick = false;
+        }
+        else if (gestureKickHeld)
+        {
+            Debug.Log($"Kick pending... dist={distToBall:F2} (need ≤{kickDistance}), dot={facingDot:F2} (need ≥{kickFacingDot}), cooldownOK={cooldownOk}");
+        }
+
+        _kickPressedLast = gestureKickHeld;
+
+        // rewards
+        if (ball && goal)
+        {
+            float dist = Vector3.Distance(ball.position, goal.position);
+            AddReward(0.5f * (prevDist - dist));
+            AddReward(-0.01f * distToBall);
+            AddReward(-0.001f);
+            prevDist = dist;
+        }
+    }
 
     public override void Heuristic(in ActionBuffers actionsOut)
     {
@@ -245,27 +272,27 @@ public class KittyAgent : Agent
         c[2] = 0f; // we ignore RL kick; kicks are from gesture==3
     }
 
-	void KickBall()
-	{
-		if (!ball || !ballRb || !goal) return;
+    void KickBall()
+    {
+        if (!ball || !ballRb || !goal) return;
 
-		if (_ballFrozen)
-		{
-			ballRb.constraints = RigidbodyConstraints.None;
-			_ballFrozen = false;
-		}
+        if (_ballFrozen)
+        {
+            ballRb.constraints = RigidbodyConstraints.None;
+            _ballFrozen = false;
+        }
 
-		Vector3 flatGoal = new Vector3(goal.position.x, ball.position.y, goal.position.z);
-		Vector3 dir = (flatGoal - ball.position).normalized;
-		ballRb.AddForce(dir * kickForce, ForceMode.Impulse);
+        Vector3 flatGoal = new Vector3(goal.position.x, ball.position.y, goal.position.z);
+        Vector3 dir = (flatGoal - ball.position).normalized;
+        ballRb.AddForce(dir * kickForce, ForceMode.Impulse);
 
-		Debug.Log("KickBall(): impulse applied");
+        Debug.Log("KickBall(): impulse applied");
     }
 
     public void ScoredGoal()
     {
         AddReward(+1f);
-        EndEpisode(); // resets via OnEpisodeBegin()
+        EndEpisode();
     }
 
     public void OutOfBounds()

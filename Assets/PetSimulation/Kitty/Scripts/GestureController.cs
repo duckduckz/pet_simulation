@@ -29,7 +29,7 @@ public class GestureReceiver : MonoBehaviour
                 byte[] data = udpClient.Receive(ref anyIP);
                 if (data.Length > 0)
                 {
-                    gesture = data[0]; // gesture: 0=Idle, 1=Walk, 2=Run
+                    gesture = data[0]; 
                 }
             }
             catch (System.Exception err)

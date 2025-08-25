@@ -52,6 +52,24 @@ Thumbs.db
 
 /Assets/PetSimulation/Kitty//AnimationClips
 
+/Assets/PetSimulation/Kitty/Prefabs
+
+*.meta
+
+*.asset
+
+*.fbx
+*.prefab
+*.mat
+*.tga
+*.physicMaterial
+*.controller
+*.inputactions
+*.txt
+*.lighting
+*.unity
+*.json
+
 
 # OS
 .DS_Store
