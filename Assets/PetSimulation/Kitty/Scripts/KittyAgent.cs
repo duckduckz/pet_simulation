@@ -7,155 +7,228 @@ using Unity.MLAgents.Sensors;
 [RequireComponent(typeof(DecisionRequester))]
 public class KittyAgent : Agent
 {
-	[Header("Scene references")]
-	public Transform ball;
-	public Transform goal;
-	public Transform ballStart;
-	public Transform agentStart;
-	public Rigidbody ballRb;
+    [Header("Scene references")]
+    public Transform ball;
+    public Transform goal;
+    public Transform ballStart;
+    public Transform agentStart;
+    public Rigidbody ballRb;
 
-	[Header("Motion tuning")]
-	public float walkSpeed = 2f;
-	public float runSpeed = 4f;
-	public float idleSpeed = 0f; // for completeness
+    [Header("Motion tuning")]
+    public float walkSpeed = 2f;
+    public float runSpeed = 4f;
+    public float idleSpeed = 0f;
 
-	private Rigidbody rb;
-	private Animator anim;
-	private float prevDist;
-	// Reference to the GestureReceiver script in the scene
-	private GestureReceiver gestureReceiver;
+	[Header("Quality-of-life")]
+	public bool autoFaceWhenNear = true;
+	public float faceAssistDistance = 1.2f;
 
-	public override void Initialize()
-	{
-		rb = GetComponent<Rigidbody>();
-		anim = GetComponent<Animator>();
-		gestureReceiver = Object.FindFirstObjectByType<GestureReceiver>();
-	}
+    [Header("Kick settings")]
+    public float kickForce = 10f;
+    public float kickDistance = 2.0f;         
+    [Range(-1f, 1f)] public float kickFacingDot = 0.7f;
+    public float kickCooldown = 0.35f;
 
-	public override void OnEpisodeBegin()
-	{
-		if (ball == null)
-			ball = GameObject.FindWithTag("Ball")?.transform;
-		if (goal == null)
-			goal = GameObject.Find("Soccer Goal")?.transform;
-		if (agentStart == null)
-			agentStart = GameObject.Find("AgentStart")?.transform;
-		if (ballStart == null)
-			ballStart = GameObject.Find("BallStart")?.transform;
+    [Header("Assist toward ball (only when Walk/Run)")]
+    [Tooltip("Start blending toward the ball when farther than this.")]
+    public float assistStartDist = 0.8f;
+    [Tooltip("Use full assist at/above this distance.")]
+    public float assistFullDist = 3.0f;
+    [Tooltip("Max blend weight toward the ball (0=no assist, 1=ignore RL dir).")]
+    [Range(0f, 1f)] public float assistMaxWeight = 0.65f;
 
-		if (ball != null)
-			ballRb = ball.GetComponent<Rigidbody>();
+    private Rigidbody rb;
+    private Animator anim;
+    private float prevDist;
+    private GestureReceiver gestureReceiver;
 
-		if (agentStart != null)
-			transform.position = agentStart.position;
+    private bool _kickPressedLast;
+	private bool _pendingKick;
+    private float _lastKickTime;
+    private bool _ballFrozen;
 
-		if (rb != null)
-		{
-			rb.linearVelocity = Vector3.zero;
-			rb.angularVelocity = Vector3.zero;
-		}
+    public override void Initialize()
+    {
+        rb = GetComponent<Rigidbody>();
+        anim = GetComponent<Animator>();
+        gestureReceiver = Object.FindFirstObjectByType<GestureReceiver>();
+    }
 
-		if (ballStart != null)
-			ball.position = ballStart.position;
+    public override void OnEpisodeBegin()
+    {
+        if (ball == null)       ball = GameObject.FindWithTag("Ball")?.transform;
+        if (goal == null)       goal = GameObject.Find("Soccer Goal")?.transform;
+        if (agentStart == null) agentStart = GameObject.Find("AgentStart")?.transform;
+        if (ballStart == null)  ballStart = GameObject.Find("BallStart")?.transform;
 
-		if (ballRb != null)
-		{
-			ballRb.linearVelocity = Vector3.zero;
-			ballRb.angularVelocity = Vector3.zero;
-		}
+        if (ball != null)       ballRb = ball.GetComponent<Rigidbody>();
 
-		if (ball != null && goal != null)
-			prevDist = Vector3.Distance(ball.position, goal.position);
-	}
+        if (agentStart != null) transform.position = agentStart.position;
 
-	public override void CollectObservations(VectorSensor sensor)
-	{
-		Vector3 relBall = ball != null ? transform.InverseTransformPoint(ball.position) : Vector3.zero;
-		Vector3 relGoal = goal != null ? transform.InverseTransformPoint(goal.position) : Vector3.zero;
-		Vector3 velSelf = rb != null ? transform.InverseTransformDirection(rb.linearVelocity) : Vector3.zero;
-		Vector3 velBall = ballRb != null ? transform.InverseTransformDirection(ballRb.linearVelocity) : Vector3.zero;
+        if (rb != null)
+        {
+            rb.linearVelocity = Vector3.zero;
+            rb.angularVelocity = Vector3.zero;
+        }
 
-		sensor.AddObservation(relBall.x);
-		sensor.AddObservation(relBall.z);
-		sensor.AddObservation(relGoal.x);
-		sensor.AddObservation(relGoal.z);
-		sensor.AddObservation(velSelf.x);
-		sensor.AddObservation(velSelf.z);
-		sensor.AddObservation(velBall.x);
-		sensor.AddObservation(velBall.z);
-		// pad to 12 floats
-		sensor.AddObservation(0f);
-		sensor.AddObservation(0f);
-		sensor.AddObservation(0f);
-		sensor.AddObservation(1f);
-	}
+        if (ballStart != null && ball != null)
+            ball.position = ballStart.position;
+
+        if (ballRb != null)
+        {
+            ballRb.constraints = RigidbodyConstraints.None; 
+            ballRb.linearVelocity = Vector3.zero;
+            ballRb.angularVelocity = Vector3.zero;
+        }
+
+        if (ball != null && goal != null)
+            prevDist = Vector3.Distance(ball.position, goal.position);
+
+        _kickPressedLast = false;
+        _lastKickTime = -999f;
+        _ballFrozen = false;
+    }
+
+    public override void CollectObservations(VectorSensor sensor)
+    {
+        Vector3 relBall = ball ? transform.InverseTransformPoint(ball.position) : Vector3.zero;
+        Vector3 relGoal = goal ? transform.InverseTransformPoint(goal.position) : Vector3.zero;
+        Vector3 velSelf = rb ? transform.InverseTransformDirection(rb.linearVelocity) : Vector3.zero;
+        Vector3 velBall = ballRb ? transform.InverseTransformDirection(ballRb.linearVelocity) : Vector3.zero;
+
+        sensor.AddObservation(relBall.x);
+        sensor.AddObservation(relBall.z);
+        sensor.AddObservation(relGoal.x);
+        sensor.AddObservation(relGoal.z);
+        sensor.AddObservation(velSelf.x);
+        sensor.AddObservation(velSelf.z);
+        sensor.AddObservation(velBall.x);
+        sensor.AddObservation(velBall.z);
+        // pad to 12
+        sensor.AddObservation(0f);
+        sensor.AddObservation(0f);
+        sensor.AddObservation(0f);
+        sensor.AddObservation(1f);
+    }
 
 	public override void OnActionReceived(ActionBuffers a)
 	{
 		if (rb == null || anim == null) return;
 
+		// direction from RL 
 		float moveX = Mathf.Clamp(a.ContinuousActions[0], -1f, 1f);
 		float moveZ = Mathf.Clamp(a.ContinuousActions[1], -1f, 1f);
-		bool kick = a.ContinuousActions[2] > 0.5f;
-		Vector3 dir = new Vector3(moveX, 0f, moveZ);
+		Vector3 rlDir = new Vector3(moveX, 0f, moveZ);
+		if (rlDir.sqrMagnitude > 1f) rlDir.Normalize();
 
-		// --- Hybrid gesture override logic ---
+		// gestures control
 		int gesture = gestureReceiver ? gestureReceiver.gesture : -1;
-		Debug.Log($"Gesture: {gesture} | moveX: {moveX:F2}, moveZ: {moveZ:F2}, kick: {kick} | dir.sqrMagnitude: {dir.sqrMagnitude:F2}");
+		float speed; int animState;
+		if (gesture == 0)            { speed = idleSpeed; animState = 0; } // idle
+		else if (gesture == 1)       { speed = walkSpeed; animState = 1; } // walk
+		else if (gesture == 2)       { speed = runSpeed;  animState = 2; } // run
+		else { speed = walkSpeed; animState = 1; } 
 
-		float speed = walkSpeed;
-		int animState = 1; // Default to Walk
 
-		if (gesture == 0) // Fist = Idle
+		// Freeze/unfreeze ball while Idle
+		if (ballRb)
 		{
-			speed = idleSpeed;
-			animState = 0;
-		}
-		else if (gesture == 1) // Open palm = Walk
-		{
-			speed = walkSpeed;
-			animState = 1;
-		}
-		else if (gesture == 2) // Two fingers = Run
-		{
-			speed = runSpeed;
-			animState = 2;
-		}
-		// If gesture == -1 (no hand detected), you can let RL decide
-		else
-		{
-			// Optional: let RL model's output determine speed/state if you encode this in your model
-			// Here, fallback to walk for safety
-			speed = walkSpeed;
-			animState = 1;
+			if (gesture == 0 && !_ballFrozen)
+			{
+				ballRb.linearVelocity = Vector3.zero;
+				ballRb.angularVelocity = Vector3.zero;
+				ballRb.constraints = RigidbodyConstraints.FreezePositionX
+								| RigidbodyConstraints.FreezePositionZ
+								| RigidbodyConstraints.FreezeRotation;
+				_ballFrozen = true;
+			}
+			else if (gesture != 0 && _ballFrozen)
+			{
+				ballRb.constraints = RigidbodyConstraints.None;
+				_ballFrozen = false;
+			}
 		}
 
-		Debug.Log($"Selected speed: {speed} | Animator State: {animState}");
-
-		if (dir.sqrMagnitude > 1e-3f && speed > 0)
+		// distance/facing to ball 
+		float distToBall = Mathf.Infinity;
+		Vector3 towardBall = Vector3.zero;
+		float facingDot = -1f;
+		if (ball)
 		{
-			rb.MovePosition(rb.position + dir.normalized * speed * Time.fixedDeltaTime);
-			transform.rotation = Quaternion.LookRotation(dir);
+			Vector3 toBall = ball.position - transform.position;
+			toBall.y = 0f;
+			distToBall = toBall.magnitude;
+			towardBall = distToBall > 1e-3f ? toBall / distToBall : Vector3.zero;
+			if (towardBall != Vector3.zero)
+				facingDot = Vector3.Dot(transform.forward, towardBall);
+		}
+
+		// final move direction
+		Vector3 dir = rlDir;
+
+		// normal assist while walking/running
+		if ((gesture == 1 || gesture == 2) && towardBall != Vector3.zero)
+		{
+			float t = Mathf.InverseLerp(assistStartDist, assistFullDist, distToBall);
+			float w = Mathf.Clamp01(t) * assistMaxWeight;         // 0..assistMaxWeight
+			dir = (dir.sqrMagnitude < 1e-6f) ? towardBall : Vector3.Slerp(dir.normalized, towardBall, w);
+		}
+
+		// kick-pending assist: when showing 3 fingers but not yet in range, strongly steer to the ball
+		bool gestureKickHeld = (gesture == 3);
+		if (gestureKickHeld && (distToBall > kickDistance || facingDot < kickFacingDot))
+		{
+			// strong override toward ball so we actually close the gap
+			if (towardBall != Vector3.zero)
+			{
+				dir = towardBall;                    // full override while 3-fingers is up & not eligible
+				// move faster to close in (optional)
+				speed = Mathf.Max(speed, runSpeed);  // ensure we don't crawl toward it
+				// auto-face so facing condition will pass as we arrive
+				transform.rotation = Quaternion.LookRotation(towardBall);
+				Debug.Log($"[KickAssist] Driving toward ball. dist={distToBall:F2}, dot={facingDot:F2}");
+			}
+		}
+
+		// Move/animate
+		if (dir.sqrMagnitude > 1e-6f && speed > 0f)
+		{
+			Vector3 step = dir.normalized * speed * Time.fixedDeltaTime;
+			rb.MovePosition(rb.position + step);
+			if (!(gestureKickHeld && towardBall != Vector3.zero)) // rotation already handled above for kick-assist
+				transform.rotation = Quaternion.LookRotation(dir);
 			anim.SetInteger("Action", animState);
-			Debug.Log($"Moving! Direction: {dir.normalized}, Speed: {speed}");
 		}
 		else
 		{
-			anim.SetInteger("Action", 0); // Idle animation
-			Debug.Log("Not moving (idle or no direction).");
+			anim.SetInteger("Action", 0);
 		}
 
-		if (kick)
+		// --- Kick with pending latch ---
+		if (gestureKickHeld && !_kickPressedLast) _pendingKick = true;
+		else if (!gestureKickHeld)                _pendingKick = false;
+
+		bool canKickNow = (distToBall <= kickDistance) && (facingDot >= kickFacingDot);
+		bool cooldownOk = (Time.time - _lastKickTime) >= kickCooldown;
+
+		if (_pendingKick && canKickNow && cooldownOk)
 		{
-			Debug.Log("Kick triggered!");
+			Debug.Log($"KICK! dist={distToBall:F2}, dot={facingDot:F2}");
 			KickBall();
+			_lastKickTime = Time.time;
+			_pendingKick = false;
+		}
+		else if (gestureKickHeld)
+		{
+			Debug.Log($"Kick pending... dist={distToBall:F2} (need ≤{kickDistance}), dot={facingDot:F2} (need ≥{kickFacingDot}), cooldownOK={cooldownOk}");
 		}
 
-		// --- Reward Shaping ---
-		if (ball != null && goal != null)
+		_kickPressedLast = gestureKickHeld;
+
+		// Rewards (unchanged)
+		if (ball && goal)
 		{
 			float dist = Vector3.Distance(ball.position, goal.position);
-			float distToBall = Vector3.Distance(transform.position, ball.position);
 			AddReward(0.5f * (prevDist - dist));
 			AddReward(-0.01f * distToBall);
 			AddReward(-0.001f);
@@ -163,31 +236,41 @@ public class KittyAgent : Agent
 		}
 	}
 
-	public override void Heuristic(in ActionBuffers actionsOut)
-	{
-		var c = actionsOut.ContinuousActions;
-		c[0] = Input.GetAxisRaw("Horizontal");
-		c[1] = Input.GetAxisRaw("Vertical");
-		c[2] = Input.GetKey(KeyCode.K) ? 1f : 0f;
-	}
+
+    public override void Heuristic(in ActionBuffers actionsOut)
+    {
+        var c = actionsOut.ContinuousActions;
+        c[0] = Input.GetAxisRaw("Horizontal");
+        c[1] = Input.GetAxisRaw("Vertical");
+        c[2] = 0f; // we ignore RL kick; kicks are from gesture==3
+    }
 
 	void KickBall()
 	{
-		if (ball == null || ballRb == null || goal == null) return;
+		if (!ball || !ballRb || !goal) return;
+
+		if (_ballFrozen)
+		{
+			ballRb.constraints = RigidbodyConstraints.None;
+			_ballFrozen = false;
+		}
+
 		Vector3 flatGoal = new Vector3(goal.position.x, ball.position.y, goal.position.z);
 		Vector3 dir = (flatGoal - ball.position).normalized;
-		ballRb.AddForce(dir * 10f, ForceMode.Impulse);
-	}
+		ballRb.AddForce(dir * kickForce, ForceMode.Impulse);
 
-	public void ScoredGoal()
-	{
-		AddReward(+1f);
-		EndEpisode();
-	}
+		Debug.Log("KickBall(): impulse applied");
+    }
 
-	public void OutOfBounds()
-	{
-		AddReward(-1f);
-		EndEpisode();
-	}
+    public void ScoredGoal()
+    {
+        AddReward(+1f);
+        EndEpisode(); // resets via OnEpisodeBegin()
+    }
+
+    public void OutOfBounds()
+    {
+        AddReward(-1f);
+        EndEpisode();
+    }
 }

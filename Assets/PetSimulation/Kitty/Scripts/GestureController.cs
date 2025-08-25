@@ -6,7 +6,7 @@ using UnityEngine;
 public class GestureReceiver : MonoBehaviour
 {
     public int listenPort = 5066;
-    public int gesture = 0;  
+    public volatile int gesture = 0; 
 
     UdpClient udpClient;
     Thread receiveThread;

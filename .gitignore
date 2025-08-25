@@ -50,6 +50,7 @@ Thumbs.db
 
 /Assets/PetSimulation/Kitty/Models/
 
+/Assets/PetSimulation/Kitty//AnimationClips
 
 
 # OS
@@ -63,3 +64,5 @@ debug.log
 
 
 
+
+.fake

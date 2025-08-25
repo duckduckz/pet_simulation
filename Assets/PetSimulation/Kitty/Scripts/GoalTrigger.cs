@@ -1,16 +1,33 @@
 using UnityEngine;
-using Unity.MLAgents;
 
 public class GoalTrigger : MonoBehaviour
 {
-    public KittyAgent agent;     
+    public KittyAgent agent;
+    public Transform ballStart;    // assign in Inspector
+    public Rigidbody ballRb;
+
+    public bool endEpisodeOnGoal = true;    // keep true for training
+    public bool respawnBallOnGoal = false;  // set true for free-play
+
+    void Awake()
+    {
+        if (!ballRb && agent && agent.ball) ballRb = agent.ball.GetComponent<Rigidbody>();
+    }
 
     void OnTriggerEnter(Collider other)
     {
-        // Debug.LogError($"GOAL TRIGGER FIRED! Collided with object named '{other.name}' which has the tag '{other.tag}'.");
-        if (other.CompareTag("Ball"))
+        if (!other.CompareTag("Ball")) return;
+
+        if (endEpisodeOnGoal)
         {
-            agent.ScoredGoal();
+            agent.ScoredGoal(); // resets via OnEpisodeBegin()
+        }
+        else if (respawnBallOnGoal && ballStart && ballRb)
+        {
+            ballRb.constraints = RigidbodyConstraints.None;
+            other.transform.position = ballStart.position;
+            ballRb.linearVelocity = Vector3.zero;
+            ballRb.angularVelocity = Vector3.zero;
         }
     }
 }
